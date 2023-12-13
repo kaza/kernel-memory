@@ -67,13 +67,14 @@ public class TextExtractionHandler : IPipelineStepHandler
             var destFile = $"{uploadedFile.Name}.extract.txt";
             BinaryData fileContent = await this._orchestrator.ReadFileAsync(pipeline, sourceFile, cancellationToken).ConfigureAwait(false);
 
-            string text = string.Empty;
+            //string text = string.Empty;
+            var memoryDocument = new MemoryDocument();
             string extractType = MimeTypes.PlainText;
             bool skipFile = false;
 
             if (fileContent.ToArray().Length > 0)
             {
-                (text, extractType, skipFile) = await this.ExtractTextAsync(uploadedFile, fileContent, cancellationToken).ConfigureAwait(false);
+                (memoryDocument, extractType, skipFile) = await this.ExtractTextAsync(uploadedFile, fileContent, cancellationToken).ConfigureAwait(false);
             }
 
             // If the handler cannot extract text, we move on. There might be other handlers in the pipeline
@@ -83,14 +84,14 @@ public class TextExtractionHandler : IPipelineStepHandler
             if (!skipFile)
             {
                 this._log.LogDebug("Saving extracted text file {0}", destFile);
-                await this._orchestrator.WriteFileAsync(pipeline, destFile, new BinaryData(text), cancellationToken).ConfigureAwait(false);
+                await this._orchestrator.WriteFileAsync(pipeline, destFile, new BinaryData(memoryDocument), cancellationToken).ConfigureAwait(false);
 
                 var destFileDetails = new DataPipeline.GeneratedFileDetails
                 {
                     Id = Guid.NewGuid().ToString("N"),
                     ParentId = uploadedFile.Id,
                     Name = destFile,
-                    Size = text.Length,
+                    Size = memoryDocument.CompleteContent.Length,
                     MimeType = extractType,
                     ArtifactType = DataPipeline.ArtifactTypes.ExtractedText,
                     Tags = pipeline.Tags,
@@ -106,54 +107,53 @@ public class TextExtractionHandler : IPipelineStepHandler
         return (true, pipeline);
     }
 
-    private async Task<(string text, string extractType, bool skipFile)> ExtractTextAsync(
-        DataPipeline.FileDetails uploadedFile,
+    private async Task<(MemoryDocument text, string extractType, bool skipFile)> ExtractTextAsync(DataPipeline.FileDetails uploadedFile,
         BinaryData fileContent,
         CancellationToken cancellationToken)
     {
         bool skipFile = false;
-        string text = string.Empty;
+        var memoryDocument = new MemoryDocument();
         string extractType = MimeTypes.PlainText;
 
         switch (uploadedFile.MimeType)
         {
             case MimeTypes.PlainText:
                 this._log.LogDebug("Extracting text from plain text file {0}", uploadedFile.Name);
-                text = fileContent.ToString();
+                memoryDocument = fileContent.ToString().ToDocument();
                 break;
 
             case MimeTypes.MarkDown:
                 this._log.LogDebug("Extracting text from MarkDown file {0}", uploadedFile.Name);
-                text = fileContent.ToString();
+                memoryDocument = fileContent.ToString().ToDocument();
                 extractType = MimeTypes.MarkDown;
                 break;
 
             case MimeTypes.Json:
                 this._log.LogDebug("Extracting text from JSON file {0}", uploadedFile.Name);
-                text = fileContent.ToString();
+                memoryDocument = fileContent.ToString().ToDocument();
                 break;
 
             case MimeTypes.MsWord:
                 this._log.LogDebug("Extracting text from MS Word file {0}", uploadedFile.Name);
-                text = new MsWordDecoder().DocToText(fileContent);
+                memoryDocument = new MsWordDecoder().DocToText(fileContent).ToDocument();
                 break;
 
             case MimeTypes.MsPowerPoint:
                 this._log.LogDebug("Extracting text from MS PowerPoint file {0}", uploadedFile.Name);
-                text = new MsPowerPointDecoder().DocToText(fileContent,
+                memoryDocument = new MsPowerPointDecoder().DocToText(fileContent,
                     withSlideNumber: true,
                     withEndOfSlideMarker: false,
-                    skipHiddenSlides: true);
+                    skipHiddenSlides: true).ToDocument();
                 break;
 
             case MimeTypes.MsExcel:
                 this._log.LogDebug("Extracting text from MS Excel file {0}", uploadedFile.Name);
-                text = new MsExcelDecoder().DocToText(fileContent);
+                memoryDocument = new MsExcelDecoder().DocToText(fileContent).ToDocument();
                 break;
 
             case MimeTypes.Pdf:
                 this._log.LogDebug("Extracting text from PDF file {0}", uploadedFile.Name);
-                text = new PdfDecoder().DocToText(fileContent);
+                memoryDocument = new PdfDecoder().DocToText(fileContent).ToDocument();
                 break;
 
             case MimeTypes.WebPageUrl:
@@ -184,8 +184,8 @@ public class TextExtractionHandler : IPipelineStepHandler
                     break;
                 }
 
-                text = result.Text;
-                this._log.LogDebug("Web page {0} downloaded, text length: {1}", url, text.Length);
+                memoryDocument = result.Text.ToDocument();
+                this._log.LogDebug("Web page {0} downloaded, text length: {1}", url, result.Text);
                 break;
 
             case "":
@@ -203,7 +203,8 @@ public class TextExtractionHandler : IPipelineStepHandler
                     throw new NotSupportedException($"Image extraction not configured: {uploadedFile.Name}");
                 }
 
-                text = await new ImageDecoder().ImageToTextAsync(this._ocrEngine, fileContent, cancellationToken).ConfigureAwait(false);
+                var imageText = await new ImageDecoder().ImageToTextAsync(this._ocrEngine, fileContent, cancellationToken).ConfigureAwait(false);
+                memoryDocument = imageText.ToDocument();
                 break;
 
             default:
@@ -213,6 +214,6 @@ public class TextExtractionHandler : IPipelineStepHandler
                 break;
         }
 
-        return (text, extractType, skipFile);
+        return (memoryDocument, extractType, skipFile);
     }
 }
